@@ -51,6 +51,7 @@ function Merge-AzureRmNetworkSecuritySourceIpList {
         #
         # - Any other line sets the name used for subsequent lines.  Uppercase characters are transformed to lowercase.  Non-word sequences are transformed to '-'.
         [Parameter(Mandatory, Position=2, ValueFromPipeline)]
+        [AllowEmptyString()]
         [string[]] $Sources,
 
         # Network protocols to be matched by the generated rules.  Accepted values are:
