@@ -88,7 +88,9 @@ function Merge-AzureRmNetworkSecuritySourceIpList {
         # Sort destination specs
         Write-Verbose "Preparing..."
         $Destinations = [ordered] @{}
-        $DestinationPorts.GetEnumerator() | % { $Destinations.Add($_.Key, $_.Value) }
+        $DestinationPorts.GetEnumerator() `
+            | sort Value, Key `
+            | % { $Destinations.Add($_.Key, $_.Value) }
 
         # Default name until source list provides one
         $SourceName = "ip"
