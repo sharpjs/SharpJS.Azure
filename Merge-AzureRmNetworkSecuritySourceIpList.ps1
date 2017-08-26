@@ -73,7 +73,7 @@ function Merge-AzureRmNetworkSecuritySourceIpList {
 
         # Starting priority for generated rules.
         [Parameter()]
-        [int] $Priority = 10000
+        [int] $Priority = 2000
     )
 
     begin {
