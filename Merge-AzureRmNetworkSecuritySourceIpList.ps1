@@ -31,63 +31,112 @@ $AddressRe = [regex] '\d{1,3}(?:\.\d{1,3}){3}(?:/\d\d?)?'
 function Merge-AzureRmNetworkSecuritySourceIpList {
     <#
     .SYNOPSIS
-        Merges rules allowing a list of source addresses into a network security group's inbound rules set.
+        Creates a set of inbound rules allowing a list of source addresses, and merges into existing rules for a network security group.
     #>
-    [CmdletBinding(DefaultParameterSetName="AllPorts")]
+    [CmdletBinding()]
     param (
+        # Name of the resource group to which the network security group belongs.
         [Parameter(Mandatory, Position=0)]
         [string] $ResourceGroupName,
 
+        # Name of the network security group.
         [Parameter(Mandatory, Position=1)]
         [string] $NetworkSecurityGroupName,
 
+        # Source names and addresses to be matched by the generated rules.  Interpreted line-by-line as follows:
+        #
+        # - Blank lines are ignored.
+        #
+        # - Lines in IP or CIDR format generate rules allowing inbound traffic from the specified addresses.
+        #
+        # - Any other line sets the name used for subsequent lines.  Uppercase characters are transformed to lowercase.  Non-word sequences are transformed to '-'.
         [Parameter(Mandatory, Position=2, ValueFromPipeline)]
-        [string[]] $SourceAddresses,
+        [string[]] $Sources,
 
+        # Network protocols to be matched by the generated rules.  Accepted values are:
+        #
+        # - * (default value; matches any protocl)
+        # - Tcp
+        # - Udp
         [ValidateSet("*", "Tcp", "Udp")]
         [string] $Protocol = "*",
 
-        [Parameter(Mandatory, ParameterSetName="SpecificPorts")]
-        [string] $DestinationPortRange = "*",
-
-        [Parameter(Mandatory, ParameterSetName="SpecificPorts")]
-        [string] $ServiceName = "all",
-
+        # Names and ranges of destination ports to be matched by the generated rules.  Examples:
+        #
+        # - @{ any = "*" }              # default value; matches any port
+        # - @{ http = 80 }              # matches port 80, uses name 'http'
+        # - @{ ftp = 20-21 }            # matches ports 20 and 21, uses name 'ftp'
+        # - @{ http = 80; https = 443 } # multiple possible matches
         [Parameter()]
-        [int] $MinimumPriority = 10000
+        [hashtable] $DestinationPorts = @{ all = "*" },
+
+        # Starting priority for generated rules.
+        [Parameter()]
+        [int] $Priority = 10000
     )
 
     begin {
+        Write-Verbose "Getting network security group '$NetworkSecurityGroupName' in resource group '$ResourceGroupName'."
         $Group = Get-AzureRmNetworkSecurityGroup `
             -Name              $NetworkSecurityGroupName `
             -ResourceGroupName $ResourceGroupName
 
-        $SourceName = ""
+        Write-Verbose "Getting network security group inbound rules."
+        $Rules = $Group | Get-AzureRmNetworkSecurityRuleConfig | ? Direction -EQ Inbound
+
+        # Sort destination specs
+        Write-Verbose "Preparing..."
+        $Destinations = [ordered] @{}
+        $DestinationPorts.GetEnumerator() | % { $Destinations.Add($_.Key, $_.Value) }
+
+        # Default name until source list provides one
+        $SourceName = "ip"
         $Ordinal    = 0
-        $Priority   = $MinimumPriority
     }
 
     process {
-        foreach ($Line in $SourceAddresses -split '\r?\n') {
-            # Ignore empty lines
+        foreach($Line in $Sources -split '\r?\n') {
             $Line = $Line.Trim()
-            if (!$Line) { continue }
 
-            # Is it an IP address?
-            if ($Line -match $AddressRe) {
+            if (-not $Line) {
+                # Empty line; ignore
+            } elseif ($Line -match $AddressRe) {
+                # Is it an IP address?
                 $Address = $Line
-                Write-Host "allow-$ServiceName-from-$SourceName-$Ordinal" `
-                # $Group | Add-AzureRmNetworkSecurityRuleConfig `
-                #     -Direction                 Inbound `
-                #     -Protocol                  $Protocol `
-                #     -SourceAddressPrefix       $Address `
-                #     -SourcePortRange           * `
-                #     -DestinationAddressPrefix  * `
-                #     -DestinationPortRange      $DestinationPortRange `
-                #     -Access                    Allow `
-                #     -Name                      "allow-$ServiceName-from-$SourceName-$Ordinal" `
-                #     -Priority                  1033
-                $Ordinal += 1
+
+                # Remove existing rules for this address, if any
+                $Rules | ? {
+                    $Address             -eq $_.SourceAddressPrefix  -and
+                    $Destinations.Values -eq $_.DestinationPortRange
+                } | % {
+                    Write-Verbose "Removing rule: $($_.Name)"
+                    $Group | Remove-AzureRmNetworkSecurityRuleConfig $_.Name
+                }
+
+                # Add new rule for each destination port range
+                $Destinations.GetEnumerator() | % {
+                    $ServiceName = $_.Key
+                    $PortRange   = $_.Value
+                    $RuleName    = "allow-$ServiceName-from-$SourceName-$Ordinal"
+
+                    Write-Verbose "Creating rule: $RuleName"
+
+                    $Group `
+                        | Add-AzureRmNetworkSecurityRuleConfig `
+                            -Direction                 Inbound `
+                            -Protocol                  $Protocol `
+                            -SourceAddressPrefix       $Address `
+                            -SourcePortRange           * `
+                            -DestinationAddressPrefix  * `
+                            -DestinationPortRange      $PortRange `
+                            -Access                    Allow `
+                            -Name                      $RuleName `
+                            -Priority                  $Priority `
+                        | Out-Null
+
+                    $Ordinal  += 1
+                    $Priority += 1
+                }
             } else {
                 $SourceName = ($Line -replace '\W+', '-').ToLower()
                 $Ordinal    = 0
@@ -96,6 +145,6 @@ function Merge-AzureRmNetworkSecuritySourceIpList {
     }
 
     end {
-        #$Group #| Set-AzureRmNetworkSecurityGroup
+        $Group #| Set-AzureRmNetworkSecurityGroup
     }
 }
